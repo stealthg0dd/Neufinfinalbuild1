@@ -16,6 +16,7 @@ import { updatePortfolioPrices } from '../services/marketData';
 import { analyzeBiases } from '../services/biasDetection';
 import { BiasBreakdown } from '../components/BiasBreakdown';
 import { useQueryClient } from '@tanstack/react-query';
+import { projectId } from '../utils/supabase/info';
 import { 
   TrendingUp, TrendingDown, Activity, Clock, CheckCircle, AlertTriangle,
   Database, FileText, Radio, MessageSquare, Globe, Zap, ChevronDown, ChevronUp,
@@ -162,13 +163,13 @@ const runBiasAnalysis = async () => {
       
       if (!session) {
         // Allow viewing dashboard without login for demo purposes
-        setIsLoading(false);
+        setLoading(false);
         return;
       }
 
       // Fetch user profile if logged in
       const response = await fetch(
-        `https://${import.meta.env.VITE_SUPABASE_PROJECT_ID}.supabase.co/functions/v1/make-server-22c8dcd8/user/profile`,
+        `https://${projectId}.supabase.co/functions/v1/make-server-22c8dcd8/user/profile`,
         {
           headers: {
             'Authorization': `Bearer ${session.access_token}`,
@@ -183,247 +184,117 @@ const runBiasAnalysis = async () => {
     } catch (error) {
       console.error('Error loading user data:', error);
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
   const loadDashboardData = () => {
     // Production-grade mock data that matches backend API structure
-    const signals: AlphaSignal[] = [
-      {
-        id: 'sig-001',
-        asset: 'NVDA',
-        direction: 'bullish',
-        confidence: 87.5,
-        timeHorizon: '7-14 days',
-        insight: 'Strong institutional accumulation detected with 23% increase in dark pool activity. AI chip demand surge correlated with MSFT Azure expansion.',
-        sources: 18,
-        timestamp: new Date(Date.now() - 15 * 60000).toISOString(),
-        category: 'Technical + Sentiment'
-      },
-      {
-        id: 'sig-002',
-        asset: 'TSLA',
-        direction: 'bearish',
-        confidence: 72.3,
-        timeHorizon: '3-5 days',
-        insight: 'Elevated short interest (34% above 30-day avg) coinciding with production data showing Q1 deliveries below consensus. Social sentiment overly bullish—contrarian indicator active.',
-        sources: 24,
-        timestamp: new Date(Date.now() - 8 * 60000).toISOString(),
-        category: 'Sentiment + Macro'
-      },
-      {
-        id: 'sig-003',
-        asset: 'BTC',
-        direction: 'bullish',
-        confidence: 91.2,
-        timeHorizon: '14-30 days',
-        insight: 'ETF inflows reached $1.2B (7-day avg), on-chain metrics show whale accumulation at +12%. Macro tailwinds from Fed rate cut probability rising to 78%.',
-        sources: 31,
-        timestamp: new Date(Date.now() - 22 * 60000).toISOString(),
-        category: 'Macro + On-chain'
-      },
-      {
-        id: 'sig-004',
-        asset: 'AAPL',
-        direction: 'neutral',
-        confidence: 64.8,
-        timeHorizon: '5-10 days',
-        insight: 'Mixed signals: iPhone sales in China up 8% YoY, but services revenue guidance lowered. Institutional positioning shows rotation to defensive tech. Awaiting earnings clarity.',
-        sources: 16,
-        timestamp: new Date(Date.now() - 45 * 60000).toISOString(),
-        category: 'Earnings + Geographic'
-      },
-      {
-        id: 'sig-005',
-        asset: 'GOOGL',
-        direction: 'bullish',
-        confidence: 79.6,
-        timeHorizon: '10-20 days',
-        insight: 'AI search integration driving engagement metrics up 19%. Ad revenue forecasts revised upward by 3 major analysts. Options flow shows heavy call buying at $150 strike.',
-        sources: 21,
-        timestamp: new Date(Date.now() - 3 * 60000).toISOString(),
-        category: 'Product + Options Flow'
-      },
-      {
-        id: 'sig-006',
-        asset: 'SPY',
-        direction: 'bearish',
-        confidence: 68.1,
-        timeHorizon: '7-14 days',
-        insight: 'Market breadth deteriorating: only 38% of S&P components above 50-day MA. VIX term structure in backwardation signals near-term volatility. Treasury yields showing flight-to-safety bid.',
-        sources: 27,
-        timestamp: new Date(Date.now() - 12 * 60000).toISOString(),
-        category: 'Technical + Macro'
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session?.access_token) {
+        setActiveSignals([]);
+        setDataSources([]);
+        return;
       }
-    ];
 
-    const sources: DataSource[] = [
-      {
-        id: 'src-news',
-        name: 'News Feeds',
-        type: 'news',
-        enabled: true,
-        volume: 12847,
-        sentimentSkew: 0.23,
-        lastUpdate: new Date(Date.now() - 2 * 60000).toISOString(),
-        freshness: 'live'
-      },
-      {
-        id: 'src-earnings',
-        name: 'Earnings Transcripts',
-        type: 'earnings',
-        enabled: true,
-        volume: 342,
-        sentimentSkew: 0.15,
-        lastUpdate: new Date(Date.now() - 18 * 60000).toISOString(),
-        freshness: 'recent'
-      },
-      {
-        id: 'src-filings',
-        name: 'SEC Filings',
-        type: 'filings',
-        enabled: true,
-        volume: 1823,
-        sentimentSkew: -0.08,
-        lastUpdate: new Date(Date.now() - 35 * 60000).toISOString(),
-        freshness: 'recent'
-      },
-      {
-        id: 'src-x',
-        name: 'X (Twitter)',
-        type: 'social',
-        enabled: true,
-        volume: 45621,
-        sentimentSkew: 0.42,
-        lastUpdate: new Date(Date.now() - 1 * 60000).toISOString(),
-        freshness: 'live'
-      },
-      {
-        id: 'src-reddit',
-        name: 'Reddit',
-        type: 'social',
-        enabled: true,
-        volume: 8934,
-        sentimentSkew: 0.38,
-        lastUpdate: new Date(Date.now() - 5 * 60000).toISOString(),
-        freshness: 'live'
-      },
-      {
-        id: 'src-telegram',
-        name: 'Telegram',
-        type: 'social',
-        enabled: false,
-        volume: 2156,
-        sentimentSkew: 0.51,
-        lastUpdate: new Date(Date.now() - 8 * 60000).toISOString(),
-        freshness: 'recent'
-      },
-      {
-        id: 'src-macro',
-        name: 'Macro Indicators',
-        type: 'macro',
-        enabled: true,
-        volume: 234,
-        sentimentSkew: -0.12,
-        lastUpdate: new Date(Date.now() - 120 * 60000).toISOString(),
-        freshness: 'recent'
-      },
-      {
-        id: 'src-iot',
-        name: 'IoT & Satellite',
-        type: 'iot',
-        enabled: false,
-        volume: 0,
-        sentimentSkew: 0,
-        lastUpdate: new Date().toISOString(),
-        freshness: 'live',
-        comingSoon: true
+      try {
+        const response = await fetch(
+          `https://${projectId}.supabase.co/functions/v1/make-server-22c8dcd8/alpha/signals`,
+          {
+            headers: {
+              'Authorization': `Bearer ${session.access_token}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`Signals returned ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const rows = Array.isArray(payload?.signals) ? payload.signals : [];
+
+        const normalized: AlphaSignal[] = rows.map((s: any) => ({
+          id: s.id,
+          asset: s.asset,
+          direction: s.direction,
+          confidence: Number(s.confidence || 0),
+          timeHorizon: s.time_horizon || s.timeHorizon || '3-7 days',
+          insight: s.insight,
+          sources: Number(s.sources || 0),
+          timestamp: s.created_at || s.timestamp || new Date().toISOString(),
+          category: s.category || 'Price Action',
+        }));
+
+        setActiveSignals(normalized);
+
+        const avgConfidence = normalized.length
+          ? normalized.reduce((acc, s) => acc + (Number(s.confidence) || 0), 0) / normalized.length
+          : 0;
+        setAiConfidence(Number(avgConfidence.toFixed(1)));
+
+        const now = new Date().toISOString();
+        const ds: DataSource[] = [
+          {
+            id: 'src-newsapi',
+            name: String(payload?.provider || 'Signals Pipeline'),
+            type: 'news',
+            enabled: true,
+            volume: normalized.reduce((acc, s) => acc + (s.sources || 0), 0),
+            sentimentSkew: 0,
+            lastUpdate: now,
+            freshness: payload?.source === 'demo' ? 'stale' : 'live',
+          }
+        ];
+        setDataSources(ds);
+      } catch (error) {
+        console.error('Error loading alpha signals:', error);
+        setActiveSignals([]);
+        setDataSources([]);
       }
-    ];
-
-    const sentiments: SentimentData[] = [
-      {
-        asset: 'NVDA',
-        rawSentiment: 0.78,
-        adjustedSentiment: 0.62,
-        hypeAdjustment: -0.12,
-        botFilter: -0.08,
-        echoChamberCorrection: -0.05,
-        recencyBiasCorrection: 0.09
-      },
-      {
-        asset: 'TSLA',
-        rawSentiment: 0.71,
-        adjustedSentiment: 0.43,
-        hypeAdjustment: -0.18,
-        botFilter: -0.14,
-        echoChamberCorrection: -0.09,
-        recencyBiasCorrection: 0.13
-      },
-      {
-        asset: 'BTC',
-        rawSentiment: 0.82,
-        adjustedSentiment: 0.68,
-        hypeAdjustment: -0.09,
-        botFilter: -0.11,
-        echoChamberCorrection: -0.06,
-        recencyBiasCorrection: 0.12
-      }
-    ];
-
-    setActiveSignals(signals);
-    setDataSources(sources);
-    setSentimentData(sentiments);
+    });
   };
 
   const loadSignalAttributions = (signalId: string) => {
     // Mock attribution data - in production, this would come from API
-    const attributions: SignalAttribution[] = [
-      {
-        id: 'attr-001',
-        source: 'Bloomberg Terminal',
-        snippet: 'NVIDIA announces new H200 chip orders from major cloud providers, exceeding Q1 expectations by 34%',
-        timestamp: new Date(Date.now() - 25 * 60000).toISOString(),
-        sentiment: 0.89,
-        confidence: 0.94,
-        url: 'https://bloomberg.com/example'
-      },
-      {
-        id: 'attr-002',
-        source: 'Form 4 Filing',
-        snippet: 'Insider buying: CFO acquired 15,000 shares at avg price $878.50. Total insider ownership now 2.3%',
-        timestamp: new Date(Date.now() - 18 * 60000).toISOString(),
-        sentiment: 0.72,
-        confidence: 0.98
-      },
-      {
-        id: 'attr-003',
-        source: 'Dark Pool Monitor',
-        snippet: 'Block trade detection: 280,000 shares @ $882 (23% above 20-day avg volume). Institutional accumulation pattern confirmed',
-        timestamp: new Date(Date.now() - 12 * 60000).toISOString(),
-        sentiment: 0.81,
-        confidence: 0.87
-      },
-      {
-        id: 'attr-004',
-        source: 'X/Twitter - @chip_analyst',
-        snippet: 'Supply chain checks indicate TSMC capacity booked through Q3 2025 for NVIDIA orders. Lead times extending.',
-        timestamp: new Date(Date.now() - 8 * 60000).toISOString(),
-        sentiment: 0.76,
-        confidence: 0.68
-      },
-      {
-        id: 'attr-005',
-        source: 'Earnings Call Transcript',
-        snippet: 'Microsoft Azure exec mentioned "securing additional GPU capacity" 4 times during infrastructure segment',
-        timestamp: new Date(Date.now() - 45 * 60000).toISOString(),
-        sentiment: 0.84,
-        confidence: 0.91
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session?.access_token) {
+        setSignalAttributions([]);
+        return;
       }
-    ];
-    
-    setSignalAttributions(attributions);
+
+      try {
+        const response = await fetch(
+          `https://${projectId}.supabase.co/functions/v1/make-server-22c8dcd8/alpha/signals/${signalId}/attributions`,
+          {
+            headers: {
+              'Authorization': `Bearer ${session.access_token}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`Attributions returned ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const rows = Array.isArray(payload?.attributions) ? payload.attributions : [];
+        const attrs: SignalAttribution[] = rows.map((a: any) => ({
+          id: a.id,
+          source: a.source,
+          snippet: a.snippet,
+          timestamp: a.created_at || a.timestamp || new Date().toISOString(),
+          sentiment: Number(a.sentiment || 0),
+          confidence: Number(a.confidence || 0),
+          url: a.url || undefined,
+        }));
+
+        setSignalAttributions(attrs);
+      } catch (error) {
+        console.error('Error loading signal attributions:', error);
+        setSignalAttributions([]);
+      }
+    });
   };
 
   const refreshData = () => {
@@ -487,7 +358,7 @@ const runBiasAnalysis = async () => {
     }
   };
 
-  if (isLoading || portfolioLoading || biasLoading) {
+  if (loading || portfolioLoading || biasLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">

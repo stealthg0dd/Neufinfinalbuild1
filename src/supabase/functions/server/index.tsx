@@ -44,6 +44,490 @@ async function verifyUser(authHeader: string | null) {
   return user;
 }
 
+type NormalizedQuote = {
+  source: 'live' | 'demo';
+  provider: 'finnhub' | 'alphavantage' | 'demo';
+  asOf: string;
+  symbol: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  high?: number;
+  low?: number;
+  open?: number;
+  volume?: string;
+  reason?: string;
+};
+
+type NormalizedIntraday = {
+  source: 'live' | 'demo';
+  provider: 'finnhub' | 'alphavantage' | 'demo';
+  asOf: string;
+  symbol: string;
+  interval: string;
+  candles: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number }>;
+  reason?: string;
+};
+
+type AlphaSignalRecord = {
+  id: string;
+  user_id: string;
+  asset: string;
+  direction: 'bullish' | 'bearish' | 'neutral';
+  confidence: number;
+  time_horizon: string;
+  insight: string;
+  sources: number;
+  category: string;
+  source: 'live' | 'demo';
+  provider: string;
+  created_at: string;
+};
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+async function getAlphaSignalsFromDb(userId: string): Promise<AlphaSignalRecord[]> {
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const { data } = await supabase
+    .from('alpha_signals')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(25);
+  return (data || []) as AlphaSignalRecord[];
+}
+
+async function getAlphaSignalAttributionsFromDb(signalId: string) {
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const { data } = await supabase
+    .from('alpha_signal_attributions')
+    .select('*')
+    .eq('signal_id', signalId)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  return data || [];
+}
+
+async function fetchNewsApiArticles(query: string) {
+  const apiKey = Deno.env.get('NEWSAPI_KEY') || '';
+  if (!apiKey) {
+    throw new Error('NEWSAPI_KEY not configured');
+  }
+
+  const response = await fetch(
+    `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&pageSize=10&apiKey=${apiKey}`
+  );
+
+  if (!response.ok) {
+    throw new Error(`NewsAPI returned ${response.status}`);
+  }
+
+  const data = await response.json();
+  return Array.isArray(data?.articles) ? data.articles : [];
+}
+
+async function generateAlphaSignals(userId: string) {
+  const dbPortfolio = await getUserPortfolioFromDb(userId);
+  const holdings = dbPortfolio?.holdings || [];
+
+  if (!holdings.length) {
+    return {
+      signals: [],
+      attributionsBySignalId: {},
+      source: 'live' as const,
+      provider: 'neufin' as const,
+      reason: 'No portfolio holdings',
+    };
+  }
+
+  const symbols = holdings.map((h: any) => String(h.symbol || '').toUpperCase()).filter(Boolean);
+  const topSymbols = symbols.slice(0, 5);
+
+  let articles: any[] = [];
+  let signalsSource: 'live' | 'demo' = 'live';
+  let reason: string | undefined;
+
+  try {
+    articles = await fetchNewsApiArticles(topSymbols.join(' OR '));
+  } catch (e: any) {
+    signalsSource = 'demo';
+    reason = e?.message || 'News unavailable';
+    articles = [];
+  }
+
+  const quotes = await Promise.all(topSymbols.map(async (s) => getQuoteWithFallback(s)));
+  const now = new Date().toISOString();
+
+  const signals = quotes.map((q) => {
+    const direction: 'bullish' | 'bearish' | 'neutral' =
+      q.changePercent > 0.4 ? 'bullish' : q.changePercent < -0.4 ? 'bearish' : 'neutral';
+
+    const confidence = clamp(60 + Math.abs(q.changePercent) * 8 + (articles.length ? 10 : 0), 55, 95);
+    const category = articles.length ? 'News + Price Action' : 'Price Action';
+    const related = articles.filter((a) => {
+      const title = String(a?.title || '').toUpperCase();
+      const desc = String(a?.description || '').toUpperCase();
+      return title.includes(q.symbol) || desc.includes(q.symbol);
+    });
+
+    const head = related[0] || articles[0];
+    const insight = head?.title
+      ? `${head.title}`
+      : q.source === 'demo'
+        ? `Live market/news feeds unavailable.`
+        : `Market moved ${q.changePercent >= 0 ? '+' : ''}${q.changePercent.toFixed(2)}% recently.`;
+
+    return {
+      asset: q.symbol,
+      direction,
+      confidence: Number(confidence.toFixed(1)),
+      timeHorizon: '3-7 days',
+      insight,
+      sources: Math.max(related.length, articles.length ? 1 : 0),
+      category,
+      timestamp: now,
+      source: (q.source === 'demo' || signalsSource === 'demo') ? 'demo' : 'live',
+      provider: q.provider || 'neufin',
+      reason: reason || q.reason,
+      attributions: related.slice(0, 5).map((a, idx) => ({
+        id: `attr-${idx}`,
+        source: a?.source?.name || 'NewsAPI',
+        snippet: a?.description || a?.title || '',
+        timestamp: a?.publishedAt || now,
+        sentiment: 0.5,
+        confidence: 0.6,
+        url: a?.url,
+      })),
+    };
+  });
+
+  return {
+    signals,
+    source: signalsSource,
+    provider: 'newsapi',
+    reason,
+  };
+}
+
+async function upsertAlphaSignals(userId: string, generated: any) {
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  const inserted: any[] = [];
+
+  for (const s of generated.signals) {
+    const { data: signalRow, error: signalErr } = await supabase
+      .from('alpha_signals')
+      .insert({
+        user_id: userId,
+        asset: s.asset,
+        direction: s.direction,
+        confidence: s.confidence,
+        time_horizon: s.timeHorizon,
+        insight: s.insight,
+        sources: s.sources,
+        category: s.category,
+        source: s.source,
+        provider: s.provider,
+      })
+      .select('*')
+      .single();
+
+    if (signalErr || !signalRow?.id) {
+      continue;
+    }
+
+    inserted.push(signalRow);
+
+    if (Array.isArray(s.attributions) && s.attributions.length) {
+      const rows = s.attributions.map((a: any) => ({
+        signal_id: signalRow.id,
+        source: a.source,
+        snippet: a.snippet,
+        url: a.url || null,
+        sentiment: a.sentiment,
+        confidence: a.confidence,
+        created_at: new Date(a.timestamp || new Date().toISOString()).toISOString(),
+      }));
+
+      await supabase.from('alpha_signal_attributions').insert(rows);
+    }
+  }
+
+  return inserted;
+}
+
+async function getUserPortfolioFromDb(userId: string) {
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const { data: portfolio, error } = await supabase
+    .from('portfolios')
+    .select('*, portfolio_positions (*)')
+    .eq('user_id', userId)
+    .single();
+
+  if (error || !portfolio) {
+    return null;
+  }
+
+  const holdings = (portfolio.portfolio_positions || []).map((p: any) => ({
+    symbol: p.symbol,
+    shares: p.shares,
+    avgCost: p.cost_basis,
+  }));
+
+  return { portfolio, holdings };
+}
+
+function createDemoQuote(symbol: string, reason: string): NormalizedQuote {
+  return {
+    source: 'demo',
+    provider: 'demo',
+    asOf: new Date().toISOString(),
+    symbol,
+    price: 0,
+    change: 0,
+    changePercent: 0,
+    reason,
+  };
+}
+
+async function fetchFinnhubQuote(symbol: string): Promise<NormalizedQuote> {
+  const apiKey = Deno.env.get('FINNHUB_API_KEY') || '';
+  if (!apiKey) {
+    throw new Error('FINNHUB_API_KEY not configured');
+  }
+
+  const response = await fetch(
+    `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${apiKey}`,
+    {
+      headers: { 'Accept': 'application/json' },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Finnhub returned ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  if (!data?.c || data.c === 0) {
+    throw new Error('Finnhub returned invalid quote');
+  }
+
+  return {
+    source: 'live',
+    provider: 'finnhub',
+    asOf: new Date().toISOString(),
+    symbol,
+    price: Number(data.c),
+    change: Number(data.d || 0),
+    changePercent: Number(data.dp || 0),
+    high: Number(data.h || 0),
+    low: Number(data.l || 0),
+    open: Number(data.o || 0),
+  };
+}
+
+async function fetchAlphaVantageQuote(symbol: string): Promise<NormalizedQuote> {
+  const apiKey = Deno.env.get('ALPHAVANTAGE_API_KEY') || '';
+  if (!apiKey || apiKey === 'demo') {
+    throw new Error('ALPHAVANTAGE_API_KEY not configured');
+  }
+
+  const response = await fetch(
+    `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`
+  );
+
+  if (!response.ok) {
+    throw new Error(`AlphaVantage returned ${response.status}`);
+  }
+
+  const data = await response.json();
+  const quote = data?.['Global Quote'];
+  if (!quote) {
+    throw new Error('AlphaVantage returned invalid quote');
+  }
+
+  return {
+    source: 'live',
+    provider: 'alphavantage',
+    asOf: new Date().toISOString(),
+    symbol: quote['01. symbol'] || symbol,
+    price: parseFloat(quote['05. price'] || '0'),
+    change: parseFloat(quote['09. change'] || '0'),
+    changePercent: parseFloat((quote['10. change percent'] || '0').replace('%', '')),
+    volume: quote['06. volume'],
+    high: parseFloat(quote['03. high'] || '0'),
+    low: parseFloat(quote['04. low'] || '0'),
+    open: parseFloat(quote['02. open'] || '0'),
+  };
+}
+
+async function getQuoteWithFallback(symbol: string): Promise<NormalizedQuote> {
+  const cacheKey = `stocks:quote:${symbol}`;
+  const cached = await kv.get(`cache:${cacheKey}`);
+  if (cached?.value && new Date(cached.expiresAt) > new Date()) {
+    return cached.value as NormalizedQuote;
+  }
+
+  try {
+    const live = await fetchFinnhubQuote(symbol);
+    await kv.set(`cache:${cacheKey}`, {
+      key: cacheKey,
+      value: live,
+      expiresAt: new Date(Date.now() + 15 * 1000).toISOString(),
+    });
+    return live;
+  } catch (e1) {
+    try {
+      const live = await fetchAlphaVantageQuote(symbol);
+      await kv.set(`cache:${cacheKey}`, {
+        key: cacheKey,
+        value: live,
+        expiresAt: new Date(Date.now() + 30 * 1000).toISOString(),
+      });
+      return live;
+    } catch (e2) {
+      const demo = createDemoQuote(symbol, `Live quote unavailable (Finnhub/AlphaVantage)`);
+      await kv.set(`cache:${cacheKey}`, {
+        key: cacheKey,
+        value: demo,
+        expiresAt: new Date(Date.now() + 10 * 1000).toISOString(),
+      });
+      return demo;
+    }
+  }
+}
+
+async function fetchFinnhubIntraday(symbol: string): Promise<NormalizedIntraday> {
+  const apiKey = Deno.env.get('FINNHUB_API_KEY') || '';
+  if (!apiKey) {
+    throw new Error('FINNHUB_API_KEY not configured');
+  }
+
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - 60 * 60 * 24;
+
+  const response = await fetch(
+    `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=5&from=${from}&to=${to}&token=${apiKey}`,
+    { headers: { 'Accept': 'application/json' } }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Finnhub candle returned ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (!data || data.s !== 'ok' || !Array.isArray(data.t)) {
+    throw new Error('Finnhub returned invalid candle data');
+  }
+
+  const candles = data.t.map((t: number, i: number) => ({
+    timestamp: new Date(t * 1000).toISOString(),
+    open: Number(data.o?.[i] || 0),
+    high: Number(data.h?.[i] || 0),
+    low: Number(data.l?.[i] || 0),
+    close: Number(data.c?.[i] || 0),
+    volume: Number(data.v?.[i] || 0),
+  }));
+
+  return {
+    source: 'live',
+    provider: 'finnhub',
+    asOf: new Date().toISOString(),
+    symbol,
+    interval: '5min',
+    candles,
+  };
+}
+
+async function fetchAlphaVantageIntraday(symbol: string): Promise<NormalizedIntraday> {
+  const apiKey = Deno.env.get('ALPHAVANTAGE_API_KEY') || '';
+  if (!apiKey || apiKey === 'demo') {
+    throw new Error('ALPHAVANTAGE_API_KEY not configured');
+  }
+
+  const response = await fetch(
+    `https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol=${encodeURIComponent(symbol)}&interval=5min&apikey=${apiKey}`
+  );
+
+  if (!response.ok) {
+    throw new Error(`AlphaVantage returned ${response.status}`);
+  }
+
+  const data = await response.json();
+  const timeSeries = data?.['Time Series (5min)'];
+  if (!timeSeries) {
+    throw new Error('AlphaVantage returned invalid intraday data');
+  }
+
+  const candles = Object.entries(timeSeries)
+    .slice(0, 200)
+    .map(([timestamp, values]: [string, any]) => ({
+      timestamp: new Date(timestamp).toISOString(),
+      open: parseFloat(values['1. open']),
+      high: parseFloat(values['2. high']),
+      low: parseFloat(values['3. low']),
+      close: parseFloat(values['4. close']),
+      volume: parseInt(values['5. volume']),
+    }))
+    .reverse();
+
+  return {
+    source: 'live',
+    provider: 'alphavantage',
+    asOf: new Date().toISOString(),
+    symbol,
+    interval: '5min',
+    candles,
+  };
+}
+
+async function getIntradayWithFallback(symbol: string): Promise<NormalizedIntraday> {
+  const cacheKey = `stocks:intraday:${symbol}`;
+  const cached = await kv.get(`cache:${cacheKey}`);
+  if (cached?.value && new Date(cached.expiresAt) > new Date()) {
+    return cached.value as NormalizedIntraday;
+  }
+
+  try {
+    const live = await fetchFinnhubIntraday(symbol);
+    await kv.set(`cache:${cacheKey}`, {
+      key: cacheKey,
+      value: live,
+      expiresAt: new Date(Date.now() + 60 * 1000).toISOString(),
+    });
+    return live;
+  } catch (e1) {
+    try {
+      const live = await fetchAlphaVantageIntraday(symbol);
+      await kv.set(`cache:${cacheKey}`, {
+        key: cacheKey,
+        value: live,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      });
+      return live;
+    } catch (e2) {
+      const demo: NormalizedIntraday = {
+        source: 'demo',
+        provider: 'demo',
+        asOf: new Date().toISOString(),
+        symbol,
+        interval: '5min',
+        candles: [],
+        reason: 'Live intraday unavailable (Finnhub/AlphaVantage)',
+      };
+      await kv.set(`cache:${cacheKey}`, {
+        key: cacheKey,
+        value: demo,
+        expiresAt: new Date(Date.now() + 30 * 1000).toISOString(),
+      });
+      return demo;
+    }
+  }
+}
+
 // Health check endpoint
 app.get("/make-server-22c8dcd8/health", (c) => {
   return c.json({ status: "ok" });
@@ -58,19 +542,150 @@ app.post("/make-server-22c8dcd8/portfolio/save", async (c) => {
     }
 
     const portfolioData = await c.req.json();
-    const key = `portfolio:${user.id}`;
-    
-    await kv.set(key, {
-      ...portfolioData,
-      userId: user.id,
-      updatedAt: new Date().toISOString(),
-    });
+    const holdings = Array.isArray(portfolioData?.holdings) ? portfolioData.holdings : [];
 
-    console.log(`Portfolio saved for user ${user.id}`);
-    return c.json({ success: true, message: 'Portfolio saved successfully' });
+    if (!holdings.length) {
+      return c.json({ error: 'No holdings provided' }, 400);
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    const { data: existingPortfolio } = await supabase
+      .from('portfolios')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+
+    let portfolioId = existingPortfolio?.id;
+
+    if (!portfolioId) {
+      const { data: created, error: createError } = await supabase
+        .from('portfolios')
+        .insert({
+          user_id: user.id,
+          name: portfolioData?.name || 'Portfolio',
+          is_synced: portfolioData?.method === 'plaid' || portfolioData?.is_synced === true,
+        })
+        .select('id')
+        .single();
+
+      if (createError || !created?.id) {
+        throw createError || new Error('Failed to create portfolio');
+      }
+
+      portfolioId = created.id;
+    } else {
+      await supabase
+        .from('portfolios')
+        .update({
+          name: portfolioData?.name || 'Portfolio',
+          is_synced: portfolioData?.method === 'plaid' || portfolioData?.is_synced === true,
+        })
+        .eq('id', portfolioId);
+    }
+
+    await supabase
+      .from('portfolio_positions')
+      .delete()
+      .eq('portfolio_id', portfolioId);
+
+    const positions = holdings
+      .map((h: any) => ({
+        portfolio_id: portfolioId,
+        symbol: String(h.symbol || h.ticker || '').toUpperCase(),
+        shares: Number(h.shares ?? h.quantity ?? 0),
+        cost_basis: Number(h.avgCost ?? h.costBasis ?? h.cost_basis ?? 0),
+        purchase_date: h.purchaseDate || h.purchase_date || null,
+        current_price: Number(h.currentPrice ?? h.current_price ?? h.avgCost ?? h.costBasis ?? 0),
+      }))
+      .filter((p: any) => p.symbol && p.shares > 0 && p.cost_basis > 0);
+
+    if (!positions.length) {
+      return c.json({ error: 'No valid holdings provided' }, 400);
+    }
+
+    const { error: insertError } = await supabase
+      .from('portfolio_positions')
+      .insert(positions);
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    console.log(`Portfolio saved to DB for user ${user.id}`);
+    return c.json({ success: true, portfolioId });
   } catch (error) {
     console.error('Error saving portfolio:', error);
     return c.json({ error: `Failed to save portfolio: ${error}` }, 500);
+  }
+});
+
+app.get("/make-server-22c8dcd8/alpha/signals", async (c) => {
+  try {
+    const user = await verifyUser(c.req.header('Authorization'));
+    if (!user) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    const cacheKey = `alpha:signals:${user.id}`;
+    const cached = await kv.get(`cache:${cacheKey}`);
+    if (cached?.value && new Date(cached.expiresAt) > new Date()) {
+      return c.json(cached.value);
+    }
+
+    const existing = await getAlphaSignalsFromDb(user.id);
+    const recent = existing.filter((s) => {
+      const t = new Date((s as any).created_at || 0).getTime();
+      return Date.now() - t < 5 * 60 * 1000;
+    });
+
+    if (recent.length) {
+      const payload = { signals: recent, source: 'live', provider: 'neufin', cached: true };
+      await kv.set(`cache:${cacheKey}`, {
+        key: cacheKey,
+        value: payload,
+        expiresAt: new Date(Date.now() + 30 * 1000).toISOString(),
+      });
+      return c.json(payload);
+    }
+
+    const generated = await generateAlphaSignals(user.id);
+    const inserted = await upsertAlphaSignals(user.id, generated);
+
+    const payload = {
+      signals: inserted,
+      source: generated.source,
+      provider: generated.provider,
+      reason: generated.reason,
+      cached: false,
+    };
+
+    await kv.set(`cache:${cacheKey}`, {
+      key: cacheKey,
+      value: payload,
+      expiresAt: new Date(Date.now() + 30 * 1000).toISOString(),
+    });
+
+    return c.json(payload);
+  } catch (error) {
+    console.error('Alpha signals error:', error);
+    return c.json({ error: 'Failed to fetch alpha signals' }, 500);
+  }
+});
+
+app.get("/make-server-22c8dcd8/alpha/signals/:id/attributions", async (c) => {
+  try {
+    const user = await verifyUser(c.req.header('Authorization'));
+    if (!user) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    const signalId = c.req.param('id');
+    const attrs = await getAlphaSignalAttributionsFromDb(signalId);
+    return c.json({ attributions: attrs, source: 'live' });
+  } catch (error) {
+    console.error('Alpha attributions error:', error);
+    return c.json({ error: 'Failed to fetch attributions' }, 500);
   }
 });
 
@@ -82,14 +697,26 @@ app.get("/make-server-22c8dcd8/portfolio/get", async (c) => {
       return c.json({ error: 'Unauthorized - please log in' }, 401);
     }
 
-    const key = `portfolio:${user.id}`;
-    const portfolio = await kv.get(key);
+    const dbPortfolio = await getUserPortfolioFromDb(user.id);
+    if (dbPortfolio?.portfolio) {
+      return c.json({
+        portfolio: {
+          id: dbPortfolio.portfolio.id,
+          holdings: dbPortfolio.holdings,
+          method: dbPortfolio.portfolio.is_synced ? 'plaid' : 'manual',
+          updatedAt: dbPortfolio.portfolio.updated_at,
+          source: 'live',
+        }
+      });
+    }
 
-    if (!portfolio) {
+    const key = `portfolio:${user.id}`;
+    const kvPortfolio = await kv.get(key);
+    if (!kvPortfolio) {
       return c.json({ portfolio: null, message: 'No portfolio found' });
     }
 
-    return c.json({ portfolio });
+    return c.json({ portfolio: { ...kvPortfolio, source: 'demo', reason: 'Portfolio loaded from legacy KV store' } });
   } catch (error) {
     console.error('Error fetching portfolio:', error);
     return c.json({ error: `Failed to fetch portfolio: ${error}` }, 500);
@@ -156,18 +783,58 @@ app.get("/make-server-22c8dcd8/stocks/quote/:symbol", async (c) => {
     }
 
     const symbol = c.req.param('symbol');
-    const apiKey = Deno.env.get('ALPHAVANTAGE_API_KEY') || 'demo';
-    
-    const response = await fetch(
-      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${apiKey}`
-    );
-    
-    const data = await response.json();
-    
-    return c.json(data);
+
+    const quote = await getQuoteWithFallback(symbol);
+    return c.json(quote);
   } catch (error) {
     console.error('AlphaVantage error:', error);
     return c.json({ error: 'Failed to fetch stock data' }, 500);
+  }
+});
+
+app.get("/make-server-22c8dcd8/public/stocks/quote/:symbol", async (c) => {
+  try {
+    const symbol = c.req.param('symbol');
+    const quote = await getQuoteWithFallback(symbol);
+    return c.json(quote);
+  } catch (error) {
+    console.error('Public quote error:', error);
+    return c.json(createDemoQuote(c.req.param('symbol'), 'Public quote failed'));
+  }
+});
+
+app.post("/make-server-22c8dcd8/public/stocks/quotes", async (c) => {
+  try {
+    const body = await c.req.json();
+    const symbols = Array.isArray(body?.symbols) ? body.symbols : [];
+
+    const quotes = await Promise.all(
+      symbols.map(async (s: string) => getQuoteWithFallback(String(s || '').toUpperCase()))
+    );
+
+    return c.json({ quotes });
+  } catch (error) {
+    console.error('Public batch quote error:', error);
+    return c.json({ quotes: [] });
+  }
+});
+
+app.get("/make-server-22c8dcd8/public/stocks/intraday/:symbol", async (c) => {
+  try {
+    const symbol = c.req.param('symbol');
+    const intraday = await getIntradayWithFallback(symbol);
+    return c.json(intraday);
+  } catch (error) {
+    console.error('Public intraday error:', error);
+    return c.json({
+      source: 'demo',
+      provider: 'demo',
+      asOf: new Date().toISOString(),
+      symbol: c.req.param('symbol'),
+      interval: '5min',
+      candles: [],
+      reason: 'Public intraday failed',
+    });
   }
 });
 
@@ -180,15 +847,9 @@ app.get("/make-server-22c8dcd8/stocks/intraday/:symbol", async (c) => {
     }
 
     const symbol = c.req.param('symbol');
-    const apiKey = Deno.env.get('ALPHAVANTAGE_API_KEY') || 'demo';
-    
-    const response = await fetch(
-      `https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol=${symbol}&interval=5min&apikey=${apiKey}`
-    );
-    
-    const data = await response.json();
-    
-    return c.json(data);
+
+    const intraday = await getIntradayWithFallback(symbol);
+    return c.json(intraday);
   } catch (error) {
     console.error('AlphaVantage error:', error);
     return c.json({ error: 'Failed to fetch intraday data' }, 500);
@@ -203,60 +864,27 @@ app.get("/make-server-22c8dcd8/portfolio/realtime", async (c) => {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    // Get user's portfolio
-    const key = `portfolio:${user.id}`;
-    const portfolio = await kv.get(key);
-    
-    if (!portfolio || !portfolio.holdings) {
+    const dbPortfolio = await getUserPortfolioFromDb(user.id);
+    if (!dbPortfolio?.holdings?.length) {
       return c.json({ error: 'No portfolio found' }, 404);
     }
 
-    const apiKey = Deno.env.get('ALPHAVANTAGE_API_KEY') || 'demo';
-    
-    // Fetch real-time data for each holding
     const realtimeData = await Promise.all(
-      portfolio.holdings.map(async (holding: any) => {
-        try {
-          const response = await fetch(
-            `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${holding.symbol}&apikey=${apiKey}`
-          );
-          const data = await response.json();
-          
-          if (data['Global Quote']) {
-            const quote = data['Global Quote'];
-            return {
-              symbol: holding.symbol,
-              shares: holding.shares,
-              avgCost: holding.avgCost,
-              currentPrice: parseFloat(quote['05. price'] || '0'),
-              change: parseFloat(quote['09. change'] || '0'),
-              changePercent: quote['10. change percent'] || '0%',
-              volume: quote['06. volume'] || '0',
-            };
-          }
-          
-          // Fallback if API fails
-          return {
-            symbol: holding.symbol,
-            shares: holding.shares,
-            avgCost: holding.avgCost,
-            currentPrice: holding.avgCost,
-            change: 0,
-            changePercent: '0%',
-            volume: '0',
-          };
-        } catch (error) {
-          console.error(`Error fetching ${holding.symbol}:`, error);
-          return {
-            symbol: holding.symbol,
-            shares: holding.shares,
-            avgCost: holding.avgCost,
-            currentPrice: holding.avgCost,
-            change: 0,
-            changePercent: '0%',
-            volume: '0',
-          };
-        }
+      dbPortfolio.holdings.map(async (holding: any) => {
+        const quote = await getQuoteWithFallback(holding.symbol);
+        return {
+          symbol: holding.symbol,
+          shares: holding.shares,
+          avgCost: holding.avgCost,
+          currentPrice: quote.price,
+          change: quote.change,
+          changePercent: `${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent.toFixed(2)}%`,
+          volume: quote.volume || '0',
+          source: quote.source,
+          provider: quote.provider,
+          asOf: quote.asOf,
+          reason: quote.reason,
+        };
       })
     );
 
@@ -282,6 +910,8 @@ app.get("/make-server-22c8dcd8/news/latest", async (c) => {
     if (!apiKey) {
       // Return mock data if no API key
       return c.json({
+        source: 'demo',
+        reason: 'NEWSAPI_KEY not configured',
         articles: [
           {
             title: 'Markets Rally on Strong Economic Data',
@@ -299,8 +929,7 @@ app.get("/make-server-22c8dcd8/news/latest", async (c) => {
     );
     
     const data = await response.json();
-    
-    return c.json(data);
+    return c.json({ ...data, source: 'live' });
   } catch (error) {
     console.error('NewsAPI error:', error);
     return c.json({ error: 'Failed to fetch news' }, 500);
@@ -329,6 +958,8 @@ app.get("/make-server-22c8dcd8/news/portfolio", async (c) => {
     if (!apiKey) {
       // Mock data
       return c.json({
+        source: 'demo',
+        reason: 'NEWSAPI_KEY not configured',
         articles: portfolio.holdings.map((h: any) => ({
           title: `${h.symbol} Shows Strong Performance`,
           description: `Latest updates on ${h.symbol} stock performance and market outlook.`,
@@ -344,8 +975,7 @@ app.get("/make-server-22c8dcd8/news/portfolio", async (c) => {
     );
     
     const data = await response.json();
-    
-    return c.json(data);
+    return c.json({ ...data, source: 'live' });
   } catch (error) {
     console.error('Portfolio news error:', error);
     return c.json({ error: 'Failed to fetch portfolio news' }, 500);

@@ -6,7 +6,7 @@ const app = new Hono();
 // Enable CORS for all routes
 app.use('/*', cors());
 
-const FINNHUB_API_KEY = 'd0rcrjpr01qn4tjhtqcgd0rcrjpr01qn4tjhtqd0';
+const FINNHUB_API_KEY = Deno.env.get('FINNHUB_API_KEY') || '';
 
 // Mock data fallback
 const mockStockData = {
@@ -24,7 +24,7 @@ const mockStockData = {
 function generateMockData(symbol: string) {
   const base = mockStockData[symbol as keyof typeof mockStockData];
   if (!base) {
-    return { c: 100, d: 0, dp: 0 };
+    return { c: 100, d: 0, dp: 0, source: 'demo', reason: 'Live quote unavailable' };
   }
 
   // Add small random variation
@@ -32,7 +32,9 @@ function generateMockData(symbol: string) {
   return {
     c: Number((base.c + (Math.random() - 0.5) * 2).toFixed(2)),
     d: Number((base.d + variation).toFixed(2)),
-    dp: Number((base.dp + variation * 0.1).toFixed(2))
+    dp: Number((base.dp + variation * 0.1).toFixed(2)),
+    source: 'demo',
+    reason: 'Live quote unavailable'
   };
 }
 
@@ -41,6 +43,9 @@ app.get('/quote/:symbol', async (c) => {
   const symbol = c.req.param('symbol');
   
   try {
+    if (!FINNHUB_API_KEY) {
+      return c.json(generateMockData(symbol));
+    }
     // Try to fetch from Finnhub API
     const response = await fetch(
       `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`,
@@ -80,6 +85,9 @@ app.post('/quotes', async (c) => {
     const quotes = await Promise.all(
       symbols.map(async (symbol: string) => {
         try {
+          if (!FINNHUB_API_KEY) {
+            return { symbol, ...generateMockData(symbol) };
+          }
           const response = await fetch(
             `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}`,
             {

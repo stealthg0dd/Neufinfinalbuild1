@@ -8,10 +8,11 @@ interface StockData {
   price: number;
   change: number;
   changePercent: number;
+  source?: StockQuote['source'];
+  reason?: string;
 }
 
 const STOCK_SYMBOLS = ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'NVDA', 'AMZN', 'META', 'NFLX'];
-const FINNHUB_API_KEY = 'd0rcrjpr01qn4tjhtqcgd0rcrjpr01qn4tjhtqd0';
 
 export function LiveStockTicker() {
   const [stocks, setStocks] = useState<StockData[]>([]);
@@ -29,21 +30,21 @@ export function LiveStockTicker() {
           price: quote.price,
           change: quote.change,
           changePercent: quote.changePercent,
+          source: quote.source,
+          reason: quote.reason,
         }));
 
         setStocks(stockData.filter(stock => stock.price > 0));
         setIsLoading(false);
       } catch (error) {
         console.error('Error fetching stock data:', error);
-        // This shouldn't happen as stockService has built-in fallbacks
-        // But just in case, use mock data
         setStocks([
-          { symbol: 'AAPL', price: 185.25, change: 2.15, changePercent: 1.17 },
-          { symbol: 'GOOGL', price: 142.80, change: -0.95, changePercent: -0.66 },
-          { symbol: 'MSFT', price: 378.90, change: 4.20, changePercent: 1.12 },
-          { symbol: 'TSLA', price: 245.67, change: -3.45, changePercent: -1.38 },
-          { symbol: 'NVDA', price: 735.50, change: 12.80, changePercent: 1.77 },
-          { symbol: 'AMZN', price: 155.20, change: 1.85, changePercent: 1.21 }
+          { symbol: 'AAPL', price: 185.25, change: 0, changePercent: 0, source: 'demo', reason: 'Live quotes unavailable' },
+          { symbol: 'GOOGL', price: 142.80, change: 0, changePercent: 0, source: 'demo', reason: 'Live quotes unavailable' },
+          { symbol: 'MSFT', price: 378.90, change: 0, changePercent: 0, source: 'demo', reason: 'Live quotes unavailable' },
+          { symbol: 'TSLA', price: 245.67, change: 0, changePercent: 0, source: 'demo', reason: 'Live quotes unavailable' },
+          { symbol: 'NVDA', price: 735.50, change: 0, changePercent: 0, source: 'demo', reason: 'Live quotes unavailable' },
+          { symbol: 'AMZN', price: 155.20, change: 0, changePercent: 0, source: 'demo', reason: 'Live quotes unavailable' }
         ]);
         setIsLoading(false);
       }
@@ -73,8 +74,15 @@ export function LiveStockTicker() {
     );
   }
 
+  const isDemo = stocks.some(s => s.source === 'demo');
+
   return (
     <div className="w-full bg-gradient-to-r from-purple-500/10 via-blue-500/10 to-purple-500/10 border-y border-purple-500/20 py-3 overflow-hidden relative">
+      {isDemo && (
+        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] text-yellow-400 border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 rounded">
+          DEMO
+        </div>
+      )}
       <motion.div
         className="flex whitespace-nowrap"
         animate={{ x: ['0%', '-100%'] }}

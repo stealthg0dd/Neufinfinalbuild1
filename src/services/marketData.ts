@@ -1,6 +1,6 @@
 import { supabase } from '../utils/supabase/client'
+import { fetchStockQuote } from '../utils/stockService'
 
-const FINNHUB_API_KEY = import.meta.env.VITE_FINNHUB_API_KEY
 const CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
 
 interface PriceCache {
@@ -17,17 +17,13 @@ export async function fetchStockPrice(symbol: string): Promise<number> {
   }
 
   try {
-    const response = await fetch(
-      `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_API_KEY}` 
-    )
-    const data = await response.json()
-    
-    if (data.c && data.c > 0) {
-      priceCache[symbol] = { price: data.c, timestamp: Date.now() }
-      return data.c
+    const quote = await fetchStockQuote(symbol)
+    if (quote?.price && quote.price > 0) {
+      priceCache[symbol] = { price: quote.price, timestamp: Date.now() }
+      return quote.price
     }
-    
-    throw new Error('Invalid price data')
+
+    throw new Error(quote?.reason || 'Invalid price data')
   } catch (error) {
     console.error(`Failed to fetch price for ${symbol}:`, error)
     // Return cached price if available, otherwise return 0
