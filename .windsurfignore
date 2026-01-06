@@ -1,0 +1,13 @@
+# Protect Figma-generated styling
+src/styles/
+globals.css
+tailwind.config.js
+components/ui/
+
+# Protect design system
+components/figma/
+
+# Protect configuration
+.env
+.env.local
+vite.config.ts

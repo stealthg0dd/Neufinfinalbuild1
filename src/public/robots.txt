@@ -1,0 +1,42 @@
+# Neufin AI - Robots.txt
+# Updated: 2024-12-30
+
+# Allow all bots to crawl
+User-agent: *
+Allow: /
+
+# Specific rules for major crawlers
+User-agent: Googlebot
+Allow: /
+Crawl-delay: 0
+
+User-agent: Bingbot
+Allow: /
+Crawl-delay: 0
+
+User-agent: GPTBot
+Allow: /
+Crawl-delay: 0
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+# Disallow admin and user-specific paths
+Disallow: /api/
+Disallow: /admin/
+Disallow: /_next/
+Disallow: /dashboard/settings/
+Disallow: /dashboard/portfolio/private/
+
+# Sitemap location
+Sitemap: https://neufin.ai/sitemap.xml
+
+# Additional sitemaps (if needed)
+# Sitemap: https://neufin.ai/sitemap-blog.xml
+# Sitemap: https://neufin.ai/sitemap-knowledge.xml

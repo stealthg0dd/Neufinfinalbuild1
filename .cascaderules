@@ -1,0 +1,182 @@
+# NEUFIN AI DEVELOPMENT RULES - READ THIS FIRST
+
+## CRITICAL: NEVER MODIFY THESE FILES
+- `src/styles/globals.css` - Contains Figma color theme
+- `tailwind.config.js` - Design system configuration
+- All files in `components/ui/` - Shadcn components
+- All files in `components/figma/` - Figma-generated components
+
+## STYLING RULES (NON-NEGOTIABLE)
+1. NEVER change color values
+2. NEVER modify CSS variables in globals.css
+3. ALWAYS use existing Tailwind classes from design system
+4. NEVER add new color utilities without explicit permission
+5. Use ONLY these approved Tailwind classes:
+   - Backgrounds: bg-background, bg-card, bg-muted
+   - Text: text-foreground, text-muted-foreground
+   - Borders: border-border
+   - Gradients: from-purple-600, to-blue-600, from-green-500, to-blue-500
+   - Opacity: /10, /20, /30 only
+
+## COMPONENT MODIFICATION RULES
+1. Add functionality ONLY - never change JSX structure
+2. Keep existing className strings intact
+3. Add new logic inside existing components
+4. Never refactor working components without explicit request
+
+## FILE CREATION RULES
+1. New files go ONLY in:
+   - `src/api/` - API routes
+   - `src/utils/` - Helper functions
+   - `src/hooks/` - Custom React hooks
+   - `src/types/` - TypeScript types
+2. NEVER create new component directories
+
+## TASK EXECUTION RULES
+1. Read existing file completely before suggesting changes
+2. Show only the modified section in diffs
+3. Ask for confirmation before multi-file changes
+4. If error persists after 2 attempts, STOP and ask for human help
+5. Never repeat the same fix more than twice
+
+## ANTI-HALLUCINATION PROTOCOL
+If you encounter:
+- Import errors → Check actual file path in project
+- Styling issues → Reference globals.css first
+- Type errors → Check existing type definitions
+- Missing dependencies → List what's actually in package.json
+
+## RESPONSE FORMAT
+Always structure responses as:
+1. What I'm about to change
+2. Files affected
+3. Why this won't break existing functionality
+4. Confirmation request
+
+## EMERGENCY STOP PHRASES
+If you hear these, STOP immediately:
+- "The colors are wrong"
+- "The design broke"
+- "Revert everything"
+- "Start over"
+
+## SUCCESS METRICS
+- All existing Figma components still render correctly
+- No console errors related to styling
+- Design system colors unchanged
+- Functionality added without visual regression
+```
+
+---
+
+## **WINDSURF PROMPT 1A: Initial Project Analysis (READ-ONLY)**
+```
+# CONTEXT
+I am setting up the Neufin AI platform. The Figma frontend is already committed to GitHub at https://github.com/stealthg0dd/Neufinfinalbuild1.
+
+# YOUR TASK (READ-ONLY ANALYSIS)
+1. Clone the repository
+2. Read `.cascaderules` in the root (THIS IS YOUR BIBLE)
+3. Analyze the project structure
+4. List all existing files in a tree format
+5. Identify which files are Figma-generated (DO NOT TOUCH)
+6. Create a report showing:
+   - Current dependencies in package.json
+   - Existing components (read-only)
+   - Files that need backend integration
+   - Files that can be safely modified
+
+# OUTPUT REQUIRED
+Create a file `PROJECT_ANALYSIS.md` with:
+- File tree
+- Figma-protected files list
+- Safe-to-modify files list
+- Missing dependencies list
+- Next steps recommendation
+
+# CONSTRAINTS
+- DO NOT make any code changes
+- DO NOT install dependencies yet
+- DO NOT modify any existing files
+- ONLY READ and ANALYZE
+```
+
+**Expected Output:** A complete project map. Review this manually before proceeding.
+
+---
+
+## **WINDSURF PROMPT 1B: Dependency Installation (ISOLATED TASK)**
+```
+# CONTEXT
+Project analysis complete. Now installing production dependencies.
+
+# YOUR TASK
+Install these dependencies ONLY (no changes to existing code):
+
+npm install @supabase/supabase-js @supabase/auth-helpers-react
+npm install plaid react-plaid-link
+npm install axios
+npm install @tanstack/react-query
+
+# VALIDATION
+After installation:
+1. Run `npm run dev`
+2. Check console for errors
+3. Verify existing pages still load
+4. Report any missing peer dependencies
+
+# CONSTRAINTS
+- DO NOT modify any source files
+- DO NOT update tailwind.config.js
+- DO NOT touch globals.css
+- ONLY install packages
+
+# OUTPUT
+Report:
+- Installation success/failure
+- Dev server status
+- Console warnings (if any)
+- Ready for next step: YES/NO
+```
+
+---
+
+## **WINDSURF PROMPT 1C: Environment Configuration (ISOLATED TASK)**
+```
+# CONTEXT
+Dependencies installed. Now configuring environment variables.
+
+# YOUR TASK
+1. Create `.env` file with these EXACT variables:
+
+VITE_SUPABASE_URL=https://gpczchjipalfgkfqamcu.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwY3pjaGppcGFsZmdrZnFhbWN1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNzgxMjIsImV4cCI6MjA3MzY1NDEyMn0.MCPjoXNNdtFmGjvDKVFxFXi5ff-0Lp366nkVOkEBWa8
+
+VITE_GOOGLE_CLIENT_ID=688990084729-60k5mvc9g2ljmdrjofv3o3211qdglucv.apps.googleusercontent.com
+
+VITE_PLAID_CLIENT_ID=68285cbdecb61e00241e6e56
+VITE_PLAID_ENV=sandbox
+
+VITE_FINNHUB_API_KEY=d0rcrjpr01qn4tjhtqcgd0rcrjpr01qn4tjhtqd0
+
+VITE_WEB3FORMS_KEY=bbe16bf1-435a-4fb7-92d8-9c87a735c2f7
+
+OPENAI_API_KEY=your_openai_api_key_here
+
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+
+2. Update `utils/supabase/client.ts` to use env variables (IF IT EXISTS)
+3. Create `.env.example` (copy with placeholder values)
+4. Verify `.env` is in `.gitignore`
+
+# CONSTRAINTS
+- DO NOT modify vite.config.ts styling
+- DO NOT change any imports in existing files
+- ONLY create/update .env files
+
+# VALIDATION
+Test: `console.log(import.meta.env.VITE_SUPABASE_URL)` in App.tsx (temporary)
+Should output: https://gpczchjipalfgkfqamcu.supabase.co
+
+# OUTPUT
+Confirm: "✅ Environment configured. Supabase URL accessible."
